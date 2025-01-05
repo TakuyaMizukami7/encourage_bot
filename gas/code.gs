@@ -1,41 +1,92 @@
 // プロパティ設定
 const LINE_ACCESS_TOKEN = PropertiesService.getScriptProperties().getProperty('LINE_TOKEN');
-const OPENAI_APIKEY = PropertiesService.getScriptProperties().getProperty('GPT_KEY');
+const OPENAI_API_KEY = PropertiesService.getScriptProperties().getProperty('GPT_KEY');
 
 // botにロールプレイをさせる際の制約条件(適宜書き換えてください)
 const botRoleContent = `
-あなたは明るくて面倒見の良い高校生の女の子です。友達の悩みを親身になって聞き、フランクな口調で優しく励まします。
+あなたの名前は「励ましちゃん」です。設定は日本の女子高生です。少し大人びた雰囲気で、頭の回転が早く、姉御肌なところがあります。ときどき冗談や軽いイジりを交えながらも、優しく励ましてください。
+
 以下の制約条件を守って回答してください。
+- 返答は300文字以内に要約してください。
+- 一人称は「私」です。
+- 語尾は「〜だね」「〜だよ」「〜かな」などフランクな口調を使ってください。
+`;
 
-制約条件: 
-*返答は300文字以内に要約してください。
-*一人称は"私"です。
-`
-
+// メッセージの取得
 function getUserMessages(userId) {
-  const data = PropertiesService.getUserProperties().getProperty(userId);
+  const userProperties = PropertiesService.getUserProperties();
+  const data = userProperties.getProperty(userId);
   if (data) {
+    // ユーザーとアシスタントのやり取りのみが入った配列を返す
     return JSON.parse(data);
   } else {
-    const systemMessage = {
-      "role": "system",
-      "content": botRoleContent
-    };
-    return [systemMessage];
+    // まだ履歴がなければ空配列
+    return [];
   }
 }
 
+// メッセージの保存
 function saveUserMessages(userId, messages) {
-  PropertiesService.getUserProperties().setProperty(userId, JSON.stringify(messages));
+  const userProperties = PropertiesService.getUserProperties();
+  userProperties.setProperty(userId, JSON.stringify(messages));
 }
 
-//OpenAIの呼び出し
+// メッセージの処理
+function handleMessageEvent(event) {
+  try {
+    const userId = event.source.userId;
+    const messageType = event.message.type;
+
+    if (messageType === 'text') {
+      const userInput = event.message.text;
+      let messages = getUserMessages(userId);
+
+      // システムメッセージを用意しておく
+      const systemMessage = {
+        role: "system",
+        content: botRoleContent
+      };
+
+      // API呼び出し用の配列を作る、先頭にsystemロール、その後に履歴を並べる
+      const messagesForOpenAI = [systemMessage, ...messages];
+
+      // 今回のユーザー入力を末尾に追加
+      messagesForOpenAI.push({ role: "user", content: userInput });
+      
+      // ChatGPTに問い合わせ
+      const reply = getChatGPTResponse(messagesForOpenAI);
+
+      // 今回やりとり分を履歴に追加 (ユーザー・アシスタントのみ)
+      messages.push({ role: "user", content: userInput });
+      messages.push({ role: "assistant", content: reply });
+      
+      // メッセージの長さを制限
+      if (messages.length > 11) {
+        messages = messages.slice(-10);
+      }
+
+      saveUserMessages(userId, messages);
+
+      replyToUser(event.replyToken, reply);
+
+    } else {
+      const reply = 'それは回答できないです、文字で入力してね';
+      replyToUser(event.replyToken, reply);
+    }
+  } catch (error) {
+    console.error('Error in handleMessageEvent:', error);
+    const reply = '申し訳ありません。エラーが発生しました。';
+    replyToUser(event.replyToken, reply);
+  }
+}
+
+// OpenAIの呼び出し
 function getChatGPTResponse(messages) {
   const url = 'https://api.openai.com/v1/chat/completions';
   const payload = {
     model: 'gpt-4o',
     messages: messages,
-    max_tokens: 600,
+    max_tokens: 10000,
     temperature: 0.7
   };
   const options = {
@@ -57,7 +108,7 @@ function getChatGPTResponse(messages) {
   }
 }
 
-
+// ユーザーへの返信
 function replyToUser(replyToken, text) {
   const url = 'https://api.line.me/v2/bot/message/reply';
   const payload = {
